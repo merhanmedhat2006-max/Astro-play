@@ -46,7 +46,16 @@ def tex(name):
         p = config.ASSETS_DIR / "ui" / name
         if not p.exists():
             p = config.ASSETS_DIR / name
-        _cache[name] = Texture(p)
+        if not p.exists():                                 # an Ursina built-in such as "white_cube"
+            _cache[name] = load_texture(name.rsplit(".", 1)[0] if name.endswith(".png") else name)
+            return _cache[name]
+        t = Texture(p)
+        if name.startswith(("ground_", "mottle_", "detail_", "rock", "crater", "footprint", "sky/")):
+            t.filtering = "mipmap"                       # smooth at a distance...
+            from panda3d.core import SamplerState
+            t._texture.setMagfilter(SamplerState.FT_linear)   # ...and not blocky up close (Ursina only sets the min filter)
+            t._texture.setAnisotropicDegree(4)
+        _cache[name] = t
     return _cache[name]
 
 

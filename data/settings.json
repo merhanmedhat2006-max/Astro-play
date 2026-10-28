@@ -1,7 +1,7 @@
 {
-  "lang": "en",
-  "music": false,
-  "sfx": false,
+  "lang": "ar",
+  "music": true,
+  "sfx": true,
   "music_volume": 0.5,
   "sfx_volume": 0.8
 }

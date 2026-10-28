@@ -5,12 +5,19 @@ import random
 
 from ursina import *  # noqa: F401,F403
 from ursina.prefabs.first_person_controller import FirstPersonController
-from ursina.shaders import basic_lighting_shader as LIT
+from .world_shader import LIT
+
 from panda3d.core import TransparencyAttrib
 
+from .. import config
 from . import ui
+from .habitat import Habitat
 
 # mission -> (texture, position, scale, halo colour)   texture 'sun' = glowing disc
+HAB_POS = (-17.0, -3.0)          # habitat origin on every map; its airlock faces +x toward the centre of the map
+KEEPOUT = (-15.0, -3.0, 9.8)      # decorative rocks/craters are cleared inside this circle
+
+
 SKY_BODY = {
     "moon": ("earth.png", (-55, 38, 120), 24, (0.35, 0.6, 1.0)),
     "mars": ("sun", (70, 45, 110), 16, (1.0, 0.9, 0.7)),
@@ -46,6 +53,7 @@ class World:
         self.dust = []
         self.planet = None
         self.player = None
+        self.habitat = None
         self._rng = random.Random(mission.id)
         self._build()
 
@@ -64,13 +72,27 @@ class World:
         sky = Sky(texture=ui.tex(f"sky/sky_{m.id}.png"))
         self.entities.append(sky)
         # -- lights
-        sun = DirectionalLight(shadows=False, color=C(SUN_COL[m.id]))
+        sun = DirectionalLight(shadows=config.SHADOWS, shadow_map_resolution=Vec2(2048, 2048), color=C(SUN_COL[m.id]))
         sun.look_at(Vec3(*SUN_DIR[m.id]))
+        if config.SHADOWS:                                   # shadows cover the playable area around the lander/habitat
+            area = Entity(position=(-3, 0, -4), scale=(70, 12, 62), visible=False)
+            self.entities.append(area)
+            sun.update_bounds(area)
         amb = AmbientLight(color=Color(*AMBIENT[m.id], 1))
         self.lights = [sun, amb]
         # -- ground
-        self.ent(model="plane", scale=(140, 1, 140), texture=ui.tex("ground.png"), texture_scale=(30, 30),
-                 color=gcol, collider="box")
+        gname = f"ground_{m.id}.png"
+        rich = (config.ASSETS_DIR / "ui" / gname).exists()
+        self.ent(model="plane", scale=(140, 1, 140), texture=ui.tex(gname if rich else "ground.png"),
+                 texture_scale=((12, 12) if rich else (30, 30)), color=(Color(1.12, 1.12, 1.12, 1) if rich else gcol), collider="box")
+        if (config.ASSETS_DIR / "ui" / f"detail_{m.id}.png").exists():      # crisp pebbles/grain for close range
+            dt_ = self.ent(model="plane", scale=(140, 1, 140), y=0.008, shader=None, texture=ui.tex(f"detail_{m.id}.png"),
+                           texture_scale=(46, 46), color=color.white)
+            dt_.setTransparency(TransparencyAttrib.MAlpha)
+        if (config.ASSETS_DIR / "ui" / f"mottle_{m.id}.png").exists():      # big soft patches hide the tiling
+            mt = self.ent(model="plane", scale=(140, 1, 140), y=0.012, shader=None, texture=ui.tex(f"mottle_{m.id}.png"),
+                          color=color.white)
+            mt.setTransparency(TransparencyAttrib.MAlpha)
         self._craters(rng, m)
         # -- sky body with halo and terminator shading
         tname, spos, ssc, halo = SKY_BODY[m.id]
@@ -95,22 +117,37 @@ class World:
             base = shade(m.ground_color, rng.uniform(0.45, 0.7))
             self.ent(model="sphere", position=(d * math.cos(a), -2, d * math.sin(a)), scale=(w, hh * 1.5, w),
                      color=C(mixc(base, haze, 0.45)))
-        # -- boulders and small rocks
-        for _ in range(55):
-            sz = rng.uniform(0.5, 2.4)
-            x, z = rng.uniform(-55, 55), rng.uniform(-55, 55)
+        # -- boulders: textured, tinted, some angular slabs; clusters gather around the props
+        for _ in range(60):
+            sz = rng.uniform(0.5, 2.6)
+            x, z = rng.uniform(-58, 58), rng.uniform(-58, 58)
             if abs(x) < 17 and abs(z) < 17:
                 continue
-            self.ent(model="sphere", scale=(sz * 1.3, sz * 0.8, sz), position=(x, sz * 0.25, z), collider="box",
-                     rotation_y=rng.uniform(0, 360), color=C(shade(m.ground_color, rng.uniform(0.6, 0.95))))
-        for _ in range(90):
-            sz = rng.uniform(0.12, 0.4)
-            x, z = rng.uniform(-30, 30), rng.uniform(-30, 30)
-            self.ent(model="sphere", scale=(sz * 1.4, sz * 0.7, sz), position=(x, sz * 0.15, z),
-                     color=C(shade(m.ground_color, rng.uniform(0.5, 1.0))))
+            self._rock(x, z, sz, m.ground_color, rng, slab=rng.random() < 0.3)
+        for o in m.objects:                                # pebble fields around every point of interest
+            for _ in range(10):
+                a = rng.uniform(0, 6.283)
+                if abs(a - 4.712) < 0.9:                   # keep the approach from the lander clear of clutter
+                    continue
+                d = rng.uniform(max(o.size[0], o.size[2]) * 0.8, 6.5)
+                self._rock(o.pos[0] + d * math.cos(a), o.pos[1] + d * math.sin(a), rng.uniform(0.18, 0.55), m.ground_color, rng,
+                           slab=rng.random() < 0.35)
+        for _ in range(140):
+            sz = rng.uniform(0.1, 0.38)
+            x, z = rng.uniform(-34, 34), rng.uniform(-34, 34)
+            self.ent(model="sphere", scale=(sz * 1.4, sz * 0.7, sz), position=(x, sz * 0.15, z), texture=ui.tex("rock.png"),
+                     color=C(shade(m.ground_color, rng.uniform(0.6, 1.1))))
+        self._world_flavour(rng, m)
+        self._clear_keepout()
+        self.habitat = Habitat(self, HAB_POS[0], HAB_POS[1])
+        self.shadow(HAB_POS[0], HAB_POS[1], 10.6, 8.2, 0.55, 1.6)
+        self.shadow(HAB_POS[0] + 5.6, HAB_POS[1] - 2.6, 1.4, 1.4, 0.4)
+        self.shadow(0, -25, 4.6, 4.6, 0.5, 1.4)
+        self._footprints(rng, m)
         # -- lander + props
         self._lander()
         for o in m.objects:
+            self.shadow(o.pos[0], o.pos[1], o.size[0] * 1.1, max(o.size[2], 1.4) * 1.1, 0.5, 1.4)
             self._prop(o)
             mk = self.ent(model="diamond", shader=None, unlit=True, scale=(0.5, 0.8, 0.5), color=C(ui.GOLD),
                           position=(o.pos[0], o.size[1] + 1.6, o.pos[1]), enabled=False)
@@ -128,19 +165,142 @@ class World:
         self.player.cursor.enabled = False
         self.entities.append(self.player)
 
+    def decal(self, texture, x, z, size, heading=0.0, col=None, y=0.03, alpha=1.0):
+        """Flat textured quad lying on the ground, rotated about the vertical axis."""
+        root = Entity(position=(x, y, z), rotation_y=heading)
+        self.entities.append(root)
+        q = Entity(parent=root, model="quad", texture=ui.tex(texture), rotation_x=90, shader=None,
+                   scale=size if isinstance(size, tuple) else (size, size), color=col or Color(1, 1, 1, alpha))
+        q.setTransparency(TransparencyAttrib.MAlpha)
+        return root
+
+    def shadow(self, x, z, w, d, strength=0.45, length=1.0):
+        """Soft contact shadow cast away from the sun (cheap, works on every graphics card)."""
+        if not (config.ASSETS_DIR / "ui" / "blob_shadow.png").exists():
+            return
+        sx, _, sz = SUN_DIR[self.mission.id]
+        n = math.hypot(sx, sz) or 1.0
+        off = (w + d) * 0.28 * length
+        heading = math.degrees(math.atan2(sx, sz))
+        self.decal("blob_shadow.png", x + sx / n * off, z + sz / n * off, (w * 1.3 + off * 0.8, d * 1.2), heading,
+                   y=0.02, col=Color(0, 0, 0, strength))
+
+    def _rock(self, x, z, sz, base, rng, slab=False):
+        """A boulder: rough textured ellipsoid or an angular slab, tilted, tinted and slightly sunk in the ground."""
+        tint = shade(base, rng.uniform(1.5, 2.1))
+        if sz > 0.3:
+            self.shadow(x, z, sz * 1.4, sz * 1.2, 0.4)
+        if slab:
+            return self.ent(model="cube", scale=(sz * rng.uniform(1.2, 2.0), sz * rng.uniform(0.35, 0.7), sz * rng.uniform(0.9, 1.4)),
+                            position=(x, sz * 0.18, z), rotation=(rng.uniform(-14, 14), rng.uniform(0, 360), rng.uniform(-14, 14)),
+                            texture=ui.tex("rock.png"), texture_scale=(1.5, 1.5), color=C(tint), collider="box" if sz >= 0.9 else None)
+        return self.ent(model="sphere", scale=(sz * rng.uniform(1.0, 1.5), sz * rng.uniform(0.6, 0.95), sz * rng.uniform(0.9, 1.3)),
+                        position=(x, sz * 0.22, z), rotation=(rng.uniform(-10, 10), rng.uniform(0, 360), rng.uniform(-10, 10)),
+                        texture=ui.tex("rock.png"), texture_scale=(2, 2), color=C(tint), collider="box" if sz >= 0.9 else None)
+
     def _craters(self, rng, m):
-        for _ in range(26):
-            r = rng.uniform(2.0, 7.5)
-            x, z = rng.uniform(-60, 60), rng.uniform(-60, 60)
+        has_decal = (config.ASSETS_DIR / "ui" / "crater.png").exists()
+        for _ in range(30):
+            r = rng.uniform(2.0, 8.5)
+            x, z = rng.uniform(-62, 62), rng.uniform(-62, 62)
             if abs(x) < 15 and abs(z) < 20:
                 continue
-            col = shade(m.ground_color, 0.62)
-            self.ent(model="circle", shader=None, rotation_x=90, position=(x, 0.03, z), scale=r * 2,
-                     color=C(col, 0.9))
-            self.ent(model="circle", shader=None, rotation_x=90, position=(x + r * 0.07, 0.035, z + r * 0.07),
-                     scale=r * 1.62, color=C(shade(m.ground_color, 0.88), 0.9))
-            self.ent(model="circle", shader=None, rotation_x=90, position=(x, 0.04, z), scale=r * 1.5,
-                     color=C(shade(m.ground_color, 0.72), 0.95))
+            if has_decal:
+                self.decal("crater.png", x, z, r * 2.7, rng.uniform(0, 360), y=0.035)
+            else:  # old flat discs
+                self.ent(model="circle", shader=None, rotation_x=90, position=(x, 0.03, z), scale=r * 2,
+                         color=C(shade(m.ground_color, 0.62), 0.9))
+            if r > 4.2:                                    # raised rim: a ring of rocks and a mound of debris
+                for k in range(int(r * 2.2)):
+                    a = k / (r * 2.2) * 6.283 + rng.uniform(-0.1, 0.1)
+                    rr = r * rng.uniform(1.0, 1.12)
+                    self._rock(x + rr * math.cos(a), z + rr * math.sin(a), rng.uniform(0.25, 0.7), m.ground_color, rng,
+                               slab=rng.random() < 0.4)
+        # a scattered crater chain gives the horizon some history
+        for _ in range(8):
+            x, z = rng.uniform(-60, 60), rng.uniform(-60, 60)
+            if abs(x) > 16 or abs(z) > 22:
+                self.decal("crater.png", x, z, rng.uniform(1.2, 2.4), rng.uniform(0, 360), y=0.036)
+
+    def _clear_keepout(self):
+        """Remove scattered decoration (rocks, craters, decals) from the habitat's plot before it is built."""
+        kx, kz, kr = KEEPOUT
+        keep = []
+        for e in self.entities:
+            try:
+                p = e.position
+                near = math.hypot(p.x - kx, p.z - kz) < kr and p.y < 3 and not isinstance(e, (Sky, FirstPersonController))
+                big = max(e.scale_x, e.scale_z) > 60 if hasattr(e, "scale_x") else False      # ground planes etc.
+            except Exception:
+                near, big = False, False
+            if near and not big:
+                destroy(e)
+            else:
+                keep.append(e)
+        self.entities = keep
+
+    def _world_flavour(self, rng, m):
+        """Per-world environmental details."""
+        gc = m.ground_color
+        if m.id == "mars":                                  # long wind-carved dunes and red dust patches
+            for _ in range(14):
+                x, z = rng.uniform(-60, 60), rng.uniform(-60, 60)
+                if abs(x) < 16 and abs(z) < 22:
+                    continue
+                self.ent(model="sphere", scale=(rng.uniform(9, 20), rng.uniform(0.5, 1.1), rng.uniform(3, 6)),
+                         position=(x, 0.0, z), rotation_y=rng.uniform(0, 40), color=C(shade(gc, rng.uniform(0.9, 1.15))))
+        elif m.id == "europa":                              # translucent ice shards and cracked plates
+            for _ in range(28):
+                x, z = rng.uniform(-55, 55), rng.uniform(-55, 55)
+                if abs(x) < 15 and abs(z) < 20:
+                    continue
+                h = rng.uniform(0.8, 3.2)
+                for k in range(rng.randint(2, 4)):
+                    sh = self.ent(model="diamond", shader=None, scale=(rng.uniform(0.3, 0.6), h * rng.uniform(0.5, 1.0), rng.uniform(0.3, 0.6)),
+                                  position=(x + rng.uniform(-0.6, 0.6), h * 0.3, z + rng.uniform(-0.6, 0.6)),
+                                  rotation=(rng.uniform(-18, 18), rng.uniform(0, 360), rng.uniform(-18, 18)),
+                                  color=Color(0.75, 0.9, 1.0, 0.85))
+                    sh.setTransparency(TransparencyAttrib.MAlpha)
+        elif m.id == "orbital":                             # drifted hull debris: panels and pipes
+            for _ in range(22):
+                x, z = rng.uniform(-55, 55), rng.uniform(-55, 55)
+                if abs(x) < 16 and abs(z) < 22:
+                    continue
+                self.ent(model="cube", scale=(rng.uniform(1.2, 3), 0.12, rng.uniform(0.8, 2)), position=(x, 0.1 + rng.uniform(0, 0.4), z),
+                         rotation=(rng.uniform(-12, 12), rng.uniform(0, 360), rng.uniform(-12, 12)),
+                         color=C(shade((0.7, 0.72, 0.78), rng.uniform(0.6, 1.0))), collider="box")
+                self.ent(model="cube", scale=(0.1, 0.1, rng.uniform(1.5, 4)), position=(x + 1, 0.12, z),
+                         rotation_y=rng.uniform(0, 360), color=C((0.45, 0.48, 0.55)))
+        else:                                               # moon: bright ejecta rays of small rocks
+            for _ in range(5):
+                a = rng.uniform(0, 6.283)
+                for k in range(14):
+                    d = rng.uniform(20, 55)
+                    x, z = d * math.cos(a) + rng.uniform(-2, 2), d * math.sin(a) + rng.uniform(-2, 2)
+                    s_ = rng.uniform(0.15, 0.4)
+                    self.ent(model="sphere", scale=(s_ * 1.4, s_ * 0.6, s_), position=(x, s_ * 0.12, z), texture=ui.tex("rock.png"),
+                             color=C(shade(gc, rng.uniform(1.1, 1.5))))
+
+    def _footprints(self, rng, m):
+        """Boot-print trails from the lander to every point of interest (they hint at where to go)."""
+        if not (config.ASSETS_DIR / "ui" / "footprint.png").exists():
+            return
+        start = (0.0, -22.5)
+        targets = [(o.pos[0], o.pos[1] - (o.size[2] * 0.9 + 1.5)) for o in m.objects]
+        targets.append((HAB_POS[0] + 8.2, HAB_POS[1]))                  # the airlock
+        for tx, tz in targets:
+            dx, dz = tx - start[0], tz - start[1]
+            dist = math.hypot(dx, dz)
+            heading = math.degrees(math.atan2(dx, dz))
+            n = int(dist / 1.15)
+            for i in range(2, n):
+                f = i / n
+                wob = math.sin(f * 7 + rng.random()) * 0.6
+                x = start[0] + dx * f + wob * dz / dist
+                z = start[1] + dz * f - wob * dx / dist
+                side = 0.22 if i % 2 else -0.22
+                px, pz = x + side * dz / dist, z - side * dx / dist
+                self.decal("footprint.png", px, pz, (0.2, 0.38), heading + rng.uniform(-6, 6), y=0.045, alpha=0.55)
 
     def _lander(self):
         ent = self.ent
@@ -233,6 +393,8 @@ class World:
 
     # -- per-frame ambience
     def update(self, t, dt):
+        if self.habitat is not None:
+            self.habitat.update(t, dt)
         if self.planet is not None and not self.planet.is_empty():
             self.planet.rotation_y += 1.2 * dt
         for e in self.dust:

@@ -29,12 +29,34 @@ Python 3.10+ (developed on 3.12). Get a free Gemini API key at https://aistudio.
   explanations, the "tap a question" suggestions, the offline answers and a new **Mission Quiz** (+XP) all change
   wording and difficulty by age group.
 
+## Astronaut, habitat and survival update
+- **First-person hands, tools and watch:** suited arms and gloves, the selected tool in your right hand (scanner,
+  sample collector, spectrometer, repair wrench) with its own equip and use animations, and a digital wristwatch on
+  your left wrist showing your real oxygen percentage (turns amber below 30%, flashes red below 15%).
+- **Oxygen:** drains while you are outside (faster when walking), not inside the habitat. Warnings and alarm sounds at
+  30% and 15%. At 0% the suit's emergency system returns you to your last checkpoint (+1 mistake). Difficulty
+  changes the drain rate. Rules live in `astro/suit.py`.
+- **Tool batteries:** every successful tool use costs charge (bars under the tool slots). They trickle back slowly
+  and are fully recharged at the tool locker. A flat battery blocks that tool.
+- **Space habitat** on every map (west of the lander, airlock facing the centre), with real window openings and a sliding
+  airlock door. Press **E** while looking at a station (any tool):
+  airlock panel (open/close), **science analyzer** (analyzes your collected sample - completes the analysis objective, and once
+  everything is analyzed gives a one-time +10 XP detailed report), **bunk** (rest + save a checkpoint),
+  **tool locker** (recharge batteries), **oxygen station** outside beside the door (refills your tank).
+- **Sounds that follow what you do:** footsteps (dust / gravel / ice / metal, depending on the world and on whether you
+  are inside), landing thuds, breathing that speeds up as oxygen drops, tool and wrench sounds, door, bunk, locker, lab,
+  oxygen-fill hiss and low-oxygen alarms. All procedural (`scripts/make_audio_extra.py`).
+- **Richer surface:** per-world rocky ground textures with a close-range pebble layer, large-scale patches, craters
+  with raised rims, textured boulders, footprint trails from the lander, ice shards on Europa, dunes on Mars, hull
+  debris at the orbital lab, and soft contact shadows. Real-time sun shadows are available but experimental:
+  set `ASTRO_SHADOWS=1` (off by default).
+
 ## Controls
 | Key | Action |
 |---|---|
 | WASD / mouse | Move / look |
 | 1-4 or scroll | Select tool: Scanner, Sample Collector, Spectrometer, Repair Kit |
-| E or left click | Use selected tool on the object under the crosshair |
+| E or left click | Use selected tool on the object under the crosshair, or use the habitat station you are looking at |
 | H | Hint (detail adapts to difficulty) |
 | Q | Ask the AI Space Assistant (type, press Enter, or tap a suggested question) |
 | Tab | Evidence log |
@@ -70,12 +92,14 @@ Mission text lives in `astro/content.py`, quiz questions in `astro/quiz.py`. Fon
 pip install numpy scipy pillow fonttools
 python scripts/make_art.py        # nebulae, stars, horizon, skies, planets, icons
 python scripts/make_audio.py      # music + sound effects
+python scripts/make_audio_extra.py  # footsteps, breathing, doors, alarms (separate seed: never changes the files above)
+python scripts/make_terrain.py    # ground, detail, crater, rock and footprint textures
 ```
 
 ## Tests
 ```bash
-python -m pytest                                        # 49 tests: logic, DB, assistant, Gemini (mocked), Arabic, audio
-xvfb-run -a python scripts/smoke_test.py shots/         # plays the real game in English and Arabic, saves screenshots (Linux; elsewhere just run it)
+python -m pytest                                        # 73 tests: logic, DB, assistant, Gemini (mocked), Arabic, audio, oxygen, batteries, lab, footsteps
+xvfb-run -a python scripts/smoke_test.py shots/         # plays the real game in English and Arabic (106 checks incl. oxygen, habitat stations, sounds), saves screenshots
 ```
 
 ## Troubleshooting

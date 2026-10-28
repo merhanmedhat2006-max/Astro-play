@@ -296,3 +296,49 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "obj_repair": "\u0623\u0635\u0644\u062d {name}",
     },
 }
+
+
+# ---- habitat, oxygen and tool-battery strings
+STRINGS["en"].update({
+    "hab_door": "Habitat Airlock", "hab_analyzer": "Science Analyzer", "hab_bed": "Astronaut Bunk",
+    "hab_locker": "Tool Locker", "hab_o2": "Oxygen Station",
+    "prompt_e": "E  -  {action}",
+    "act_open": "Open airlock", "act_close": "Close airlock", "act_lab": "Analyze my samples",
+    "act_rest": "Rest and save checkpoint", "act_locker": "Recharge my tools", "act_o2": "Refill oxygen",
+    "door_opened": "Airlock open.", "door_closed": "Airlock closed.",
+    "bed_rest": "You rest in the bunk. Checkpoint saved: if your oxygen runs out you will wake up here.",
+    "bed_todo": "Still to do: {todo}", "bed_all_done": "Everything is done. Time to head back to the shuttle!",
+    "o2_filling": "Refilling oxygen...", "o2_full": "Oxygen tank full.", "o2_already_full": "Your oxygen tank is already full.",
+    "locker_charged": "All tool batteries recharged.", "locker_full": "Your tools are already fully charged.",
+    "tool_low": "The {tool} battery is too low. Recharge it at the tool locker inside the habitat.",
+    "lab_no_sample": "Collect a sample first, then bring it to the analyzer.",
+    "lab_report": "Lab analysis: {text}", "lab_bonus": "Detailed lab report: {text}  (+{xp} XP)",
+    "lab_done": "The analyzer has no new samples to study.", "ev_lab": "{name} lab report: {text}",
+    "o2_low": "Oxygen low: {p}%. Return to the habitat oxygen station.",
+    "o2_critical": "OXYGEN CRITICAL: {p}%! Get to the habitat now!",
+    "o2_empty": "Out of oxygen! Emergency return to the habitat. (+1 mistake)",
+    "watch_o2": "O2", "battery": "Battery",
+})
+STRINGS["ar"].update({
+    "hab_door": "بوابة المسكن", "hab_analyzer": "المحلّل العلمي", "hab_bed": "سرير رائد الفضاء",
+    "hab_locker": "خزانة الأدوات", "hab_o2": "محطة الأكسجين",
+    "prompt_e": "E  -  {action}",
+    "act_open": "افتح البوابة", "act_close": "أغلق البوابة", "act_lab": "حلّل عيّناتي",
+    "act_rest": "استرح واحفظ نقطة العودة", "act_locker": "اشحن أدواتي", "act_o2": "املأ الأكسجين",
+    "door_opened": "البوابة مفتوحة.", "door_closed": "البوابة مغلقة.",
+    "bed_rest": "ارتحت على السرير. حُفظت نقطة العودة: إن نفد أكسجينك ستستيقظ هنا.",
+    "bed_todo": "ما زال عليك: {todo}", "bed_all_done": "كل شيء تمّ. حان وقت العودة إلى المركبة!",
+    "o2_filling": "جارٍ ملء الأكسجين...", "o2_full": "خزّان الأكسجين ممتلئ.", "o2_already_full": "خزّان الأكسجين ممتلئ بالفعل.",
+    "locker_charged": "تم شحن بطاريات كل الأدوات.", "locker_full": "أدواتك مشحونة بالكامل بالفعل.",
+    "tool_low": "بطارية {tool} ضعيفة جدًّا. اشحنها من خزانة الأدوات داخل المسكن.",
+    "lab_no_sample": "اجمع عيّنة أولًا ثم أحضرها إلى المحلّل.",
+    "lab_report": "تحليل المعمل: {text}", "lab_bonus": "تقرير المعمل المفصّل: {text}  (+{xp} XP)",
+    "lab_done": "ليس عند المحلّل عيّنات جديدة ليدرسها.", "ev_lab": "تقرير معمل {name}: {text}",
+    "o2_low": "الأكسجين منخفض: {p}%. عُد إلى محطة الأكسجين في المسكن.",
+    "o2_critical": "الأكسجين في خطر: {p}%! اذهب إلى المسكن الآن!",
+    "o2_empty": "نفد الأكسجين! عودة طارئة إلى المسكن. (+1 خطأ)",
+    "watch_o2": "O2", "battery": "البطارية",
+})
+
+STRINGS["en"]["door_blocked"] = "Step away from the doorway first."
+STRINGS["ar"]["door_blocked"] = "ابتعد عن مدخل البوابة أولًا."

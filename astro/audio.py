@@ -6,6 +6,7 @@ or a file is missing, the game simply runs silent.
 * ``sfx(name)`` plays assets/audio/sfx_<name>.wav (honours the sound-effects toggle)
 """
 import logging
+import random
 
 from . import config
 
@@ -110,3 +111,78 @@ class AudioManager:
             snd.play()
         except Exception:  # pragma: no cover
             pass
+
+    def stop_sfx(self, name: str):
+        snd = self._sfx.get(name)
+        if snd is not None:
+            try:
+                snd.stop()
+            except Exception:  # pragma: no cover
+                pass
+
+    def loop_sfx(self, name: str, on: bool, volume: float = 1.0):
+        """Start/stop a looping effect (e.g. the oxygen-station hiss). Honours the sound-effects toggle."""
+        if not on or not self.settings.sfx:
+            self.stop_sfx(name)
+            return
+        if name not in self._sfx:
+            self._sfx[name] = self._load("sfx", f"sfx_{name}.wav")
+        snd = self._sfx[name]
+        if snd is None:
+            return
+        try:
+            snd.setLoop(True)
+            snd.setVolume(max(0.0, min(1.0, volume * self.settings.sfx_volume)))
+            if snd.status() != snd.PLAYING:
+                snd.play()
+        except Exception:  # pragma: no cover
+            pass
+
+
+SURFACE_BY_MISSION = {"moon": "dust", "mars": "gravel", "orbital": "metal", "europa": "ice"}
+
+
+class SuitSounds:
+    """Turns what the astronaut is actually doing into sound: footsteps while walking on the ground
+    (surface depends on the mission, hollow metal inside the habitat), a landing thud, and breathing
+    that speeds up and gets louder as oxygen runs low.  Pure scheduling logic; ``audio`` only needs ``.sfx``."""
+
+    STEP_EVERY = 0.46
+    BREATH_EVERY = {"ok": 4.3, "low": 3.0, "critical": 1.7, "empty": 1.3}
+
+    def __init__(self, audio, mission_id: str = "moon", rng=None):
+        self.audio = audio
+        self.surface = SURFACE_BY_MISSION.get(mission_id, "dust")
+        self.rng = rng or random.Random(7)
+        self._step_t = 0.0
+        self._breath_t = 1.0
+        self._was_grounded = True
+        self._air_time = 0.0
+        self.steps_played = 0
+        self.breaths_played = 0
+
+    def update(self, dt: float, moving: bool, grounded: bool, status: str = "ok", inside: bool = False):
+        surf = "metal" if inside else self.surface
+        if moving and grounded:
+            self._step_t -= dt
+            if self._step_t <= 0:
+                self._step_t = self.STEP_EVERY
+                self.audio.sfx(f"step_{surf}_{self.rng.randrange(3)}", volume=self.rng.uniform(0.75, 1.0),
+                               rate=self.rng.uniform(0.94, 1.06))
+                self.steps_played += 1
+        else:
+            self._step_t = min(self._step_t, 0.12)           # first step comes quickly when you start walking
+        if not grounded:
+            self._air_time += dt
+        else:
+            if not self._was_grounded and self._air_time > 0.25:
+                self.audio.sfx("land", volume=0.9)
+            self._air_time = 0.0
+        self._was_grounded = grounded
+        self._breath_t -= dt
+        if self._breath_t <= 0:
+            fast = status in ("critical", "empty")
+            self.audio.sfx("breath_fast" if fast else "breath",
+                           volume={"ok": 0.45, "low": 0.6, "critical": 0.8, "empty": 0.9}[status] * (0.8 if inside else 1.0))
+            self._breath_t = self.BREATH_EVERY[status] * (0.88 if moving and status == "ok" else 1.0)
+            self.breaths_played += 1

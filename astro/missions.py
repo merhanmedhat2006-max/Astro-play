@@ -172,6 +172,7 @@ class MissionState:
         self.mistakes = 0
         self.hints = 0
         self.base_xp = 0
+        self.lab_bonus_done = False
 
     def T(self, key, **kw):
         return i18n.t(key, self.lang, **kw)
@@ -304,3 +305,29 @@ class MissionState:
         if self.tier == "normal":
             return self.T("hint_normal" + suffix, tool=tool)
         return self.T("hint_hard" + suffix)
+
+    # -- habitat laboratory ----------------------------------------------
+    LAB_BONUS_XP = 10
+
+    def lab_analyze(self) -> ActionResult:
+        """Use the habitat's scientific analyzer on the samples collected so far.
+        Analyses any pending sample (same result as the Spectrometer); once everything is analyzed it gives a
+        one-time detailed-report bonus.  Never changes what the mission requires."""
+        T = self.T
+        if not self.collected:
+            return ActionResult(False, T("lab_no_sample"))
+        pending = [o for o in self.mission.objectives
+                   if o.action == "analyze" and o.id not in self.done and o.target in self.collected]
+        if pending:
+            o = pending[0]
+            obj = self.mission.get_object(o.target)
+            self._log(T("ev_analysis", name=obj.name, text=obj.analysis))
+            return self._finish(o, T("lab_report", text=obj.analysis))
+        if not self.lab_bonus_done:
+            self.lab_bonus_done = True
+            self.base_xp += self.LAB_BONUS_XP
+            obj = self.mission.get_object(sorted(self.collected)[0])
+            self._log(T("ev_lab", name=obj.name, text=obj.analysis))
+            return ActionResult(True, T("lab_bonus", text=obj.analysis, xp=self.LAB_BONUS_XP), xp=self.LAB_BONUS_XP,
+                                target=obj.id)
+        return ActionResult(False, T("lab_done"))

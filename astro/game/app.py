@@ -10,7 +10,8 @@ from ursina.models.procedural.quad import Quad
 from panda3d.core import TransparencyAttrib
 
 from .. import config, i18n, session
-from ..audio import AudioManager
+from ..audio import AudioManager, SuitSounds
+from ..suit import Suit, TOOL_COST
 from ..db import AGE_GROUPS
 from ..missions import TOOLS, TOOL_ORDER, get_missions, deep_dive
 from ..progression import ACHIEVEMENTS, TIER_SETTINGS, level_from_xp, tier_from_skill, xp_for_level
@@ -18,6 +19,8 @@ from ..quiz import SUGGESTED, quiz_for
 from ..settings import Settings
 from . import ui
 from .ui import rgba
+from .habitat import INTERACT_RANGE
+from .viewmodel import ViewModel
 from .world import World
 
 SUITS = [("Nova", (0.95, 0.95, 1.0)), ("Orbit", (1.0, 0.65, 0.2)), ("Comet", (0.35, 0.85, 1.0)),
@@ -542,6 +545,19 @@ class Game(Entity):
         self.audio.play_music("mission")
         window.color = rgba(m.sky_color)
         self.world = World(m)
+        suit_rgb = next((c for n, c in SUITS if n == self.profile.get("suit_color")), SUITS[0][1])
+        self.viewmodel = ViewModel(suit_rgb)
+        self.viewmodel.equip(TOOL_ORDER[0], animate=False)
+        self.suit = Suit(self.state.tier)
+        self.sounds = SuitSounds(self.audio, m.id)
+        self.inside = False
+        self.moving = False
+        self.refilling = False
+        self._last_xz = None
+        self._alarm_t = 0.0
+        self._charge_t = 0.0
+        self._resting_until = 0.0
+        self.checkpoint = (self.world.habitat.pos[0] + 8.4, self.world.habitat.pos[1], -90)   # outside the airlock
         self.build_hud()
         self.refresh_topbar()
         self.fade_in(0.8)
@@ -597,8 +613,17 @@ class Game(Entity):
             self.hud_add(Entity(parent=camera.ui, model="quad", texture=ui.tex(TOOL_ICON[t] + ".png"), position=(x, -0.378, -0.03),
                                 scale=0.058, color=rgba(ui.WHITE))).setTransparency(TransparencyAttrib.MAlpha)
             self.hud_label(str(i + 1), (x - 0.045, -0.35), 0.62, ui.GOLD, mirror=False, z=-0.04)
-            self.hud_label(self.T("glyph_" + t), (x, -0.44), 0.5, ui.CYAN, mirror=False)
+            self.hud_label(self.T("glyph_" + t), (x, -0.449), 0.5, ui.CYAN, mirror=False)
             self.slots.append(sp)
+        self.charge_fills = []
+        for i, t in enumerate(TOOL_ORDER):                         # real tool batteries (see astro/suit.py)
+            x = (i - 1.5) * 0.14
+            self.hud_add(Entity(parent=camera.ui, model="quad", scale=(0.1, 0.009), position=(x, -0.425, -0.03),
+                                color=rgba((0.02, 0.06, 0.16), 1)))
+            fill = self.hud_add(Entity(parent=camera.ui, model="quad", scale=(0.1, 0.009), position=(x, -0.425, -0.04),
+                                       color=rgba(ui.GREEN)))
+            self.charge_fills.append(fill)
+        self.prompt_text = self.hud_label("", (0, -0.165), 0.8, ui.CYAN, mirror=False)
         self.slot_name = self.hud_label("", (0, -0.318), 0.7, ui.WHITE, mirror=False, alpha=0.85)
         self.hud_label(self.T("hud_keys"), (0.86, -0.475), 0.5, ui.WHITE, align="end", alpha=0.5)
         self.select_tool(0)
@@ -627,7 +652,12 @@ class Game(Entity):
             sp.color = rgba((0.12, 0.3, 0.7) if sel else ui.PANEL, 0.95 if sel else 0.85)
             sp.scale = (0.138, 0.138) if sel else (0.125, 0.125)
         ui.set_text(self.slot_name, self.T("tool_" + TOOL_ORDER[self.tool_index]))
-        self.audio.sfx("hover", volume=0.6)
+        vm = getattr(self, "viewmodel", None)
+        if vm is not None and not vm.is_empty() and vm.current != TOOL_ORDER[self.tool_index]:
+            vm.equip(TOOL_ORDER[self.tool_index])
+            self.audio.sfx("equip", volume=0.8)
+        else:
+            self.audio.sfx("hover", volume=0.6)
 
     def toast(self, text, secs=4.0):
         if self.mode != "mission" or not getattr(self, "toast_text", None) or self.toast_text.is_empty():
@@ -658,26 +688,58 @@ class Game(Entity):
             return hit.entity.obj_id
         return None
 
+    HAB_ACTIONS = {"hab_analyzer": "act_lab", "hab_bed": "act_rest", "hab_locker": "act_locker", "hab_o2": "act_o2"}
+
     def update_target(self):
         tid = self.current_target()
-        if tid:
+        prompt = ""
+        if tid and tid.startswith("hab_"):
+            hab, p = self.world.habitat, self.world.player
+            if hab.distance_to(tid, p.x, p.z) > INTERACT_RANGE:
+                tid = None
+            else:
+                act = ("act_close" if hab.door_open else "act_open") if tid == "hab_door" else self.HAB_ACTIONS[tid]
+                prompt = self.T("prompt_e", action=self.T(act))
+                name = self.T(tid)
+        elif tid:
             name = self.state.mission.get_object(tid).name
+        if tid:
             ui.set_text(self.target_text, name, "display")
             self.target_panel.enabled = True
         else:
             self.target_text.text = ""
             self.target_panel.enabled = False
+        ui.set_text(self.prompt_text, prompt)
         self._target = tid
 
     def use_equipment(self):
+        tid = getattr(self, "_target", None)
+        if tid and tid.startswith("hab_"):                     # habitat stations work with any tool
+            self.interact_habitat(tid)
+            return
         tool = TOOL_ORDER[self.tool_index]
-        res = self.state.use_tool(tool, getattr(self, "_target", None))
+        vm = self.viewmodel
+        if not self.suit.can_use(tool):                        # empty battery: nothing happens until recharged
+            self.toast(self.T("tool_low", tool=self.T("tool_" + tool)), 5)
+            self.audio.sfx("error")
+            vm.play_use(tool, ok=False)
+            return
+        res = self.state.use_tool(tool, tid)
         if res.needs_choice:
+            if not self.suit.can_use("wrench"):                  # the repair itself needs wrench battery
+                self.toast(self.T("tool_low", tool=self.T("tool_wrench")), 5)
+                self.audio.sfx("error")
+                vm.play_use(tool, ok=False)
+                return
+            self.audio.sfx("wrench")
+            vm.play_use("wrench", ok=True)
             self.audio.sfx("open")
             self.open_repair(res.target)
             return
         self.toast(res.message, 6 if res.ok else 4)
+        vm.play_use(tool, ok=res.ok)
         if res.ok:
+            self.suit.consume(tool)
             self.audio.sfx({"scanner": "scan", "sampler": "collect", "analyzer": "analyze"}.get(tool, "success"))
             self.fx_pulse(ui.CYAN if tool == "scanner" else ui.GREEN)
             if res.xp:
@@ -688,8 +750,122 @@ class Game(Entity):
             self.audio.sfx("error")
             self.fx_pulse(ui.RED, 0.5)
         self.refresh_hud()
+        self.refresh_charges()
         if self.state.complete:
             invoke(self.finish_mission, delay=1.6)
+
+    # ---- habitat stations (their rules live in astro/suit.py and MissionState.lab_analyze)
+    def interact_habitat(self, tid):
+        hab, st, suit = self.world.habitat, self.state, self.suit
+        p = self.world.player
+        if tid == "hab_door":
+            if hab.door_open:
+                lx, lz = hab.local(p.x, p.z)
+                if abs(lx - 4.5) < 1.4 and abs(lz) < 1.3:
+                    self.toast(self.T("door_blocked"), 3)
+                    self.audio.sfx("error")
+                    return
+                hab.set_door(False)
+                self.audio.sfx("door_close")
+                self.toast(self.T("door_closed"), 2.5)
+            else:
+                hab.set_door(True)
+                self.audio.sfx("door_open")
+                self.toast(self.T("door_opened"), 2.5)
+        elif tid == "hab_analyzer":
+            res = st.lab_analyze()
+            self.toast(res.message, 9 if res.ok else 5)
+            if res.ok:
+                hab.play_lab()
+                self.audio.sfx("lab")
+                self.fx_pulse(ui.GREEN)
+                if res.xp:
+                    self.fx_float(f"+{res.xp} XP")
+                if res.completed_objective:
+                    invoke(self.audio.sfx, "success", delay=1.3)
+                self.refresh_hud()
+                if st.complete:
+                    invoke(self.finish_mission, delay=2.6)
+            else:
+                self.audio.sfx("error")
+        elif tid == "hab_bed":
+            self.rest_in_bed()
+        elif tid == "hab_locker":
+            needed = suit.recharge_all()
+            hab.play_locker()
+            hab.set_locker_leds(suit.charges)
+            self.refresh_charges()
+            self.audio.sfx("locker")
+            self.toast(self.T("locker_charged" if needed else "locker_full"), 3.5)
+            if needed:
+                self.fx_pulse(ui.CYAN, 0.8)
+        elif tid == "hab_o2":
+            if self.refilling:
+                self._stop_refill(silent=True)
+            elif suit.oxygen >= 99.9:
+                self.toast(self.T("o2_already_full"), 3)
+                self.audio.sfx("click")
+            else:
+                self.refilling = True
+                self.audio.loop_sfx("o2fill", True, 0.8)
+                self.toast(self.T("o2_filling"), 3)
+
+    def _stop_refill(self, silent=False):
+        if self.refilling:
+            self.refilling = False
+            self.audio.loop_sfx("o2fill", False)
+            if not silent:
+                self.toast(self.T("o2_full"), 3)
+
+    def rest_in_bed(self):
+        """Rest in the bunk: fade out/in, save a checkpoint inside the habitat and recap what is left to do."""
+        p, st = self.world.player, self.state
+        self.audio.sfx("bed")
+        self.checkpoint = (p.x, p.z, p.rotation_y)
+        self._resting_until = pytime.time() + 1.9
+        p.enabled = False
+        self.fade.color = rgba(ui.NAVY, 0)
+        self.fade.animate_color(rgba(ui.NAVY, 1), 0.5, curve=curve.linear)
+        invoke(self._wake_up, delay=1.5)
+        todo = [o.text for o in st.available_objectives()][:2]
+        msg = self.T("bed_rest") + "\n" + (self.T("bed_todo", todo="; ".join(todo)) if todo else self.T("bed_all_done"))
+        invoke(self.toast, msg, 9, delay=1.5)
+
+    def _wake_up(self):
+        if self.mode != "mission" or not self.world:
+            return
+        self.fade_in(0.6)
+        if not self.panel:
+            self.world.player.enabled = True
+            mouse.locked = True
+
+    def o2_emergency(self):
+        """Oxygen hit zero: the suit's emergency system returns the astronaut to the last checkpoint."""
+        self.state.mistakes += 1
+        self.suit.emergency_reset()
+        self._stop_refill(silent=True)
+        self.audio.sfx("alarm_crit")
+        self.fade.color = rgba(ui.NAVY, 0)
+        self.fade.animate_color(rgba(ui.NAVY, 1), 0.45, curve=curve.linear)
+        invoke(self._emergency_move, delay=0.55)
+        self.toast(self.T("o2_empty"), 7)
+        self.refresh_hud()
+
+    def _emergency_move(self):
+        if self.mode != "mission" or not self.world:
+            return
+        x, z, ry = self.checkpoint
+        p = self.world.player
+        p.position = Vec3(x, 0.05, z)         # feet on the floor: Ursina's controller can sink through it if it starts higher on a slow frame
+        p.rotation_y = ry
+        self.fade_in(0.8)
+
+    def refresh_charges(self):
+        for fill, t in zip(self.charge_fills, TOOL_ORDER):
+            v = self.suit.charges[t]
+            fill.scale_x = max(0.0005, 0.1 * v / 100.0)
+            fill.x = (TOOL_ORDER.index(t) - 1.5) * 0.14 - (0.1 - fill.scale_x) / 2
+            fill.color = rgba(ui.GREEN if v > 60 else (ui.GOLD if v > 25 else ui.RED))
 
     def use_hint(self):
         self.audio.sfx("hint")
@@ -761,6 +937,9 @@ class Game(Entity):
 
     def choose_fix(self, obj_id, idx):
         res = self.state.repair(obj_id, idx)
+        self.suit.consume("wrench")                              # every repair attempt uses wrench battery
+        self.refresh_charges()
+        self.audio.sfx("wrench")
         self.close_panel(silent=True)
         self.toast(res.message, 9)
         if res.ok:
@@ -848,6 +1027,12 @@ class Game(Entity):
         self.show_complete(mission, summary, evidence, stats)
 
     def end_world(self):
+        vm = getattr(self, "viewmodel", None)
+        if vm is not None and not vm.is_empty():
+            destroy(vm)
+        self.viewmodel = None
+        self.audio.loop_sfx("o2fill", False)
+        self.refilling = False
         if self.world:
             self.world.destroy()
             self.world = None
@@ -1022,11 +1207,68 @@ class Game(Entity):
         if self.mode != "mission":
             self.ambient_update()
             return
+        dt, now = time.dt, pytime.time()
         if self.world:
-            self.world.update(pytime.time(), time.dt)
-        if self.toast_t and pytime.time() > self.toast_t:
+            self.world.update(now, dt)
+        if self.toast_t and now > self.toast_t:
             self.toast_panel.enabled = False
             self.toast_text.text = ""
             self.toast_t = 0
         self.update_target()
         self._poll_answer()
+        self.update_astronaut(dt, now)
+
+    def update_astronaut(self, dt, now):
+        """Movement-driven systems: oxygen, warnings, footsteps, breathing, hands and the wristwatch."""
+        if not self.world or not self.world.player or not getattr(self, "suit", None):
+            return
+        p, hab, suit = self.world.player, self.world.habitat, self.suit
+        active = not self.panel and p.enabled
+        # real movement (works for keyboard and for scripted/teleport moves alike)
+        if self._last_xz is None or dt <= 0:
+            speed = 0.0
+        else:
+            speed = math.hypot(p.x - self._last_xz[0], p.z - self._last_xz[1]) / dt
+        self._last_xz = (p.x, p.z)
+        self.moving = active and 0.8 < speed < 14 and p.grounded
+        self.inside = hab.inside(p.x, p.z)
+        if active:
+            for ev in suit.tick(dt, self.moving, self.inside):
+                self.on_oxygen_event(ev)
+            status = suit.status
+            if status in ("low", "critical") and not self.inside:       # repeating alarm until you refill
+                if now >= self._alarm_t:
+                    self.audio.sfx("alarm_crit" if status == "critical" else "alarm_low", volume=0.8)
+                    self._alarm_t = now + (1.6 if status == "critical" else 4.0)
+            self.sounds.update(dt, self.moving, p.grounded, status, self.inside)
+        vm = self.viewmodel
+        if vm is not None and not vm.is_empty():
+            vm.update_motion(dt, self.moving, mouse.velocity[0] if active else 0.0)
+            vm.set_oxygen(suit.oxygen, suit.status, now)
+        # oxygen station: refill while standing close, stop when walking away or full
+        if self.refilling:
+            if hab.distance_to("hab_o2", p.x, p.z) > INTERACT_RANGE + 1.5:
+                self._stop_refill(silent=True)
+            elif suit.refill(dt):
+                self._stop_refill()
+        near_o2 = hab.distance_to("hab_o2", p.x, p.z) < 9
+        if near_o2:
+            hab.set_o2_screen(suit.oxygen, self.refilling)
+        self._charge_t -= dt
+        if self._charge_t <= 0:
+            self._charge_t = 0.3
+            self.refresh_charges()
+            hab.set_locker_leds(suit.charges)
+
+    def on_oxygen_event(self, ev):
+        p = int(self.suit.oxygen)
+        if ev == "low":
+            self.toast(self.T("o2_low", p=max(p, 1)), 6)
+            self.audio.sfx("alarm_low")
+            self._alarm_t = pytime.time() + 4.0
+        elif ev == "critical":
+            self.toast(self.T("o2_critical", p=max(p, 1)), 6)
+            self.audio.sfx("alarm_crit")
+            self._alarm_t = pytime.time() + 1.6
+        elif ev == "empty":
+            self.o2_emergency()

@@ -26,6 +26,10 @@ if LLM_API_KEY.lower() in ("your-key-here", "your-gemini-key", "changeme"):   # 
     LLM_API_KEY = ""
 LLM_TIMEOUT_S = float(os.getenv("ASTRO_LLM_TIMEOUT", "25"))
 
+# Experimental real-time sun shadows (ASTRO_SHADOWS=1). Off by default: it crashed under software OpenGL, so the
+# worlds use soft contact-shadow decals instead, which work everywhere.
+SHADOWS = os.getenv("ASTRO_SHADOWS", "0") == "1"
+
 LOGO_NAMES = ("logo.png", "logo.jpg", "logo.jpeg", "logo.webp")
 
 
